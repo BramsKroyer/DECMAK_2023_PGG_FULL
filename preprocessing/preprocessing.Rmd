@@ -1,0 +1,326 @@
+---
+title: "Preprocessing"
+author: "Pernille Brams & Klara Krøyer Fomsgaard"
+date: "4/1/2024"
+output:
+    html_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Setting the root directory
+setwd("/Users/pernillebrams/Desktop/AARHUS_UNIVERSITY/kandidat/decision_making/decision_making/exam_pref_strat/DecMak_2023_PREFSTRAT/JANUARY")
+
+# Clearing the environment
+rm(list=ls())
+
+```
+
+## About this .Rmd
+Preprocessing
+- making new variables (like roundprofit, group contribution etc.)
+- making a smaller dataframe with the variables we need (easier to work with) called *DMdata* based on *GLMdataset*
+
+# About the data
+The data were downloaded from OSF via this link (https://osf.io/dqye4/) on the 29th of November 2023. It contains the following files: 
+
+- *1_PGG_CRT.ztt*
+- *2_PGG_OneshotPgg.ztt*
+- *3_PGG_Race.ztt*
+- *4_PGG_Beauty.ztt*
+- *5_PGG_stratpref_PREF.ztt*
+- *analysisR3.do*
+- *GLMdataset.dta*
+- *PGG_stratpref_RAND.ztt*
+- *PGG_stratpref_STRAT.ztt*
+
+## Some introductory text from the paper:
+"The experiment was conducted in spring 2016 in the Experimental Economics Lab at the University of Strasbourg. It was programmed using Z-tree (Fischbacher, 2007). 192 subjects were recruited through ORSEE (Greiner, 2015), distributed over 8 experimental sessions, with 24 subjects in each session. Each subject participated only in one session."
+
+All sessions followed an identical procedure. After their arrival, subjects were randomly assigned to cubicles in the laboratory. Instructions were read aloud before each task. To ensure that everybody understood the tasks, participants had to answer a set of control questions before the one-shot PGG, the Race to 26 game, the Beauty Contest and the repeated PGG. These tasks would start only after all subjects had cleared the control questions.13 In every session, participants faced the classification tasks first, and then played the 15 repetitions of the PGG. Finally, they filled in a questionnaire which included qualitative information about their strategies and self-reported quantitative measures of risk preferences extracted from the SOEP German panel.14 At the end of the repeated PGG, the computer selected at random one of the four classification tasks for the whole session. The monetary payment of the subjects was based on the tokens earned in this task and those earned in the repeated PGG. The tokens were paid according to the exchange rate: 40 tokens = 1€. Subjects could earn between 7.5 and 16.5€  in the repeated PGG, and between 0 and 11€  in the other tasks.15 Participants earned 13.60€  on average and sessions lasted around 60 min."
+
+## Setting up
+```{r setup}
+# Get libraries
+library(pacman)
+
+pacman::p_load(tidyverse,
+               lme4,
+               ggplot2,
+               haven) # needed to read .dta files
+
+# Source in functions
+source("scripts/preproc_funcs.R")
+```
+
+# 1. Preprocessing
+## Read in data and preprocess
+### Loading GLMdataset.dta
+```{r preprocess1}
+# Read in data
+GLMdataset <- read_dta("data/GLMdataset.dta")
+
+# Renaming some columns
+GLMdataset <- GLMdataset %>% rename(contribution_id = cont_reppgg,
+                                    strategic_ability = ability,
+                                    bin_strategic_ability = High)
+
+# Recoding conditions: 0 stands for RAND, 1 for PREF and 2 for STRAT (found in analysisR3.do on https://osf.io/4ve7c)
+GLMdataset <- GLMdataset %>%
+  mutate(condition = case_when(
+    treatmentnumber == 0 ~ "RAND",
+    treatmentnumber == 1 ~ "PREF",
+    treatmentnumber == 2 ~ "STRAT",
+    TRUE ~ NA_character_ # default case
+  ))
+
+# Checking subjects - are they in more than one condition?
+rand_ids <- GLMdataset %>% filter(condition == "RAND") %>% select(id)
+rand_ids <- rand_ids$id
+
+pref_ids <- GLMdataset %>% filter(condition == "PREF") %>% select(id)
+pref_ids <- pref_ids$id
+
+strat_ids <- GLMdataset %>% filter(condition == "STRAT") %>% select(id)
+strat_ids <- strat_ids$id
+
+# Check for common elements
+check_common_elements(rand_ids,
+                      pref_ids,
+                      strat_ids) # Ids are not in more than one condition
+
+# ---------- Creating new variables ----------
+
+# Summed group contribution 
+GLMdataset <- GLMdataset %>% 
+  
+              # Grouping per period and group id
+              group_by(period,
+                       idgroup) %>% 
+  
+              mutate(sum_contribution_g = sum(contribution_id))
+
+GLMdataset <- GLMdataset %>% ungroup()
+
+# Average group contribution 
+GLMdataset <- GLMdataset %>% 
+  
+              # Grouping per period and group id
+              group_by(period,
+                       idgroup) %>% 
+  
+              mutate(avg_contribution_g = mean(contribution_id)) 
+
+GLMdataset <- GLMdataset %>% ungroup()
+
+# Average group contribution without your own
+GLMdataset <- GLMdataset %>% 
+  
+              # Grouping per period and group id
+              group_by(period,
+                       idgroup) %>% 
+  
+              mutate(avg_contr_g_others = (sum_contribution_g-contribution_id)/2)
+
+GLMdataset <- GLMdataset %>% ungroup()
+
+# Getting round_profit for each id
+GLMdataset <- GLMdataset %>% 
+              
+              # Grouping per id, group id and period
+              group_by(id,
+                       idgroup,
+                       period) %>% 
+  
+              # Calculating roundprofit for ith id 
+              mutate(roundprofit_id = 20-contribution_id+0.6*sum_contribution_g)
+
+GLMdataset <- GLMdataset %>% ungroup()
+
+# Recoding type: Type = 0 stands for FR, 1 for UC, 2 for CC and 3 for others (found in analysisR3.do on https://osf.io/4ve7c)
+GLMdataset <- GLMdataset %>%
+  mutate(type = case_when(
+    type == 0 ~ "Freerider",
+    type == 1 ~ "UncondCoop",
+    type == 2 ~ "CondCoop",
+    type == 3 ~ "Others",
+    TRUE ~ NA_character_ # default case
+  ))
+
+# Get group_type
+GLMdataset$idgroup = as.factor(GLMdataset$idgroup)
+GLMdataset <- GLMdataset %>%
+  group_by(idgroup) %>%
+  mutate(
+    grouptype = ifelse(length(unique(type)) == 1, as.character(first(type)), "grouptype_is_mixed")
+    ) %>%
+  ungroup()
+
+# Get group_ability_cont
+GLMdataset <- GLMdataset %>% 
+              
+              # Grouping by group
+              group_by(idgroup) %>% 
+  
+              # Get sum, mean
+              mutate(group_ability_cont = mean(strategic_ability))
+
+GLMdataset <- GLMdataset %>% ungroup()
+
+# Get group_ability_cat
+low_threshold <- quantile(GLMdataset$group_ability_cont, 0.33)
+high_threshold <- quantile(GLMdataset$group_ability_cont, 0.66)
+
+GLMdataset <- GLMdataset %>%
+  mutate(group_ability_cat = case_when(
+    group_ability_cont < low_threshold ~ "LOW",
+    group_ability_cont >= low_threshold & group_ability_cont < high_threshold ~ "MEDIUM",
+    group_ability_cont >= high_threshold ~ "HIGH"
+  ))
+
+# Add group_ability_bin
+GLMdataset <- GLMdataset %>%
+  mutate(group_ability_bin = case_when(
+    group_ability_cont < median(group_ability_cont) ~ "LOW_STRAT",
+    group_ability_cont >= median(group_ability_cont) ~ "HIGH_STRAT"
+  ))
+
+
+# ------ Selecting a smaller subset_dataset -------
+
+DMdata <- GLMdataset %>% select(
+  
+  # Structural vars 
+  id,                      # unique ids (n = 192)
+  idgroup,                 # unique group ids (n = 64)
+  sessionid,               # session id (n = 8)
+  subject,                 # subject numbers (1:24)
+  period,                  # basically trial (1:15)
+  condition,               # RAND, PREF, STRAT
+  type,                    # Freerider, UncondCoop, CondCoop, Others
+  grouptype,               # Freerider, grouptype_is_mixed, CondCoop, Others
+  
+  # Token and profit vars
+  ## Id
+  contribution_id,         # ith id's contribution (1:20)
+  roundprofit_id,          # round profit for ith id calculated with given formula (calculated by us because errors were found in the given column)
+  
+  ## Group
+  sum_contribution_g,      # groups' summed contribution (1:60 in theory)
+  avg_contribution_g,      # groups' average contribution (1:20 in theory)
+  avg_contr_g_others,      # groups' average contr without own id
+  
+  # Strategy vars
+  strategic_ability,       # strategic ability of ids (1:97) ("ability is the average score in the three ability scores" (analysisR3.do on https://osf.io/4ve7c)
+  bin_strategic_ability,   # binary strategic ability: 1 = high (for above median strategic ability), 0 = low (for below median)
+  group_ability_cont,      # group avg strategic ability
+  group_ability_cat,       # three category level of group_ability_cont
+  group_ability_bin        # group binary variable for group strategy level
+)
+
+```
+
+```{r give_group_subj_id}
+# Make groups
+groups <- unique(DMdata$idgroup)
+
+# Make column ready for member numbers
+DMdata <- DMdata %>% 
+  mutate(group_subjectid = NA)
+
+## ---- Make into func 
+give_group_subj_id <- function(df) {
+    
+  ### Make unique group_subject id 1:3 grouping per group (code only for one group)
+  for (group in groups){
+    
+    # reset
+    first_member <- NA
+    second_member <- NA
+    third_member <- NA
+    
+    # subset
+    sub_ <- df %>% filter(idgroup == group)
+    
+    # Getting unique ids in group
+    ids <- sub_ %>% select(id) %>% unique() # should have three rows
+    print(ids)
+    
+    # Assign members
+    first_member <- ids$id[1]
+    second_member <- ids$id[2]
+    third_member <- ids$id[3]
+    print("MEMBERS INCOMING")
+    print("----------------------------")
+    print(first_member)
+    print(second_member)
+    print(third_member)
+    print("----------------------------")
+    
+    df$group_subjectid[df$id == first_member] <- 1
+    df$group_subjectid[df$id == second_member] <- 2
+    df$group_subjectid[df$id == third_member] <- 3
+  
+  }
+  
+  return(df)
+}
+
+DMdata <- give_group_subj_id(DMdata)
+```
+
+```{r preprocess2}
+# ----- Keep only groups that have Freerider and CondCoop in them
+# Step 1: Identify groups that only contain 'CondCoop' and 'Freerider'
+valid_groups <- DMdata %>%
+  group_by(idgroup) %>%
+  filter(all(type %in% c('CondCoop', 'Freerider','UncondCoop','Others'))) %>% # selecting everyone now
+  ungroup() %>%
+  select(idgroup) %>%
+  distinct()
+
+# Step 2: Filter the original dataframe to only include rows from these groups
+subset_DMdata <- DMdata %>%
+  filter(idgroup %in% valid_groups$idgroup)
+
+length(unique(subset_DMdata$idgroup)) # 64 groups
+length(unique(subset_DMdata$id)) # 192 subjects
+
+# Get the id's in a vector - we only want the contr tables for these people
+ids_wanted <- unique(subset_DMdata$id) # 192 subjects
+
+```
+
+Now that we have prepared the data, we can move on - but first, we need the contribution tables:
+
+# 2. Getting contribution tables
+```{r contribution_tables}
+# Run this to get 'contribution_table' and 'contribution_table_long' in your environment
+source("scripts/get_contr_table_data.r") 
+
+# Take only freeriders and conditional cooperators and no RAND condition, should get the same as by taking only ids from ids_wanted
+filt_contribution_table_long <- contribution_table_long[contribution_table_long$id %in% ids_wanted, ]
+
+# Check
+length(unique(filt_contribution_table_long$id)) # 192
+unique(filt_contribution_table_long$condition) #  PREF STRAT RAND
+unique(filt_contribution_table_long$type) # all four types
+
+```
+
+# 3. Write to disk
+```{r write}
+# Full data
+write.csv(GLMdataset, "data/preprocessed/GLMdata.csv")
+
+# Subset
+write.csv(DMdata, "data/preprocessed/DMdata.csv")
+
+# Contribution tables
+write.csv(filt_contribution_table_long, "data/preprocessed/contributions.csv")
+```
+
