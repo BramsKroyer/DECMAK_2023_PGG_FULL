@@ -1,0 +1,58 @@
+model {
+
+  #-------------------------------------------------------------------
+  #------------------- Group-level priors -----------------------
+  #-------------------------------------------------------------------
+  
+  mu_alpha ~ dgamma(0.1,0.1)
+  mu_rho ~ dbeta(5,5)T(0.001,0.999)
+  mu_omega ~ dbeta(5,5)T(0.001,0.999)
+  
+  lambda_alpha ~ dgamma(.5,.5)
+  lambda_rho ~ dgamma(.5,.5)
+  lambda_omega ~ dgamma(.5,.5)
+  
+  #-------------------------------------------------------------------
+  #---------------------------  CC Model -----------------------------
+  #-------------------------------------------------------------------
+
+  for (g in 1:ngroups) {
+  
+    for (s in 1:groupSize) {
+
+      #--------------- Model priors ------------------------------------------------------
+
+      alpha[s,g] ~ dnorm(mu_alpha,lambda_alpha)
+      rho[s,g] ~ dnorm(mu_rho,lambda_rho)
+      omega[s,g] ~ dnorm(mu_omega,lambda_omega)
+
+      # --- Trial 1
+      #beliefs about others on first trial - gamma-poisson distribution
+      Gb[s,1,g] ~ dpois(alpha[s,g])
+
+      # modelled preference and first contribution - see below
+      p[s,1,g] <- (rho[s,g]*Gb[s,1,g])
+      c[s,1,g] ~ dpois(p[s,1,g])
+        
+    }
+
+    #--------------- Implementation of CC model --------------------------------
+
+    for (t in 2:ntrials) {
+
+      for (s in 1:groupSize) {
+        
+        #- Belief about group contribution
+        Gb[s,t,g] <- ((1-omega[s,g])*(Gb[s,t-1,g]))+(omega[s,g]*(Ga[s,t-1,g]))
+
+        #- Contribution preference, given belief and matching preference rho  
+        p[s,t,g] <- rho[s,g]*Gb[s,t,g]
+
+        #- Contribution as discrete sample from preferences
+        c[s,t,g] ~ dpois(p[s,t,g])
+      }
+        
+    }
+  }
+  
+}
