@@ -1,0 +1,73 @@
+---
+title: "Prior checks"
+author: "P & K"
+date: "11/29/2023"
+output:
+    html_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Setting the root directory
+setwd("/Users/pernillebrams/Desktop/AARHUS_UNIVERSITY/kandidat/decision_making/decision_making/exam_pref_strat/DecMak_2023_PREFSTRAT/JANUARY")
+
+```
+
+
+```{r}
+# Parameters
+n <- 1000          # Number of samples
+alpha <- 2         # Shape parameter for Gamma distribution
+beta <- 0.2        # Rate parameter for Gamma distribution
+
+# Sample from Gamma distribution
+gamma_samples <- rgamma(n, shape = alpha, rate = beta)
+
+# Plotting Poisson distributions
+plot(0:20, dpois(0:20, gamma_samples[1]), type = "h", 
+     main = "Poisson Distribution Sampled from Gamma(2, 0.2)",
+     xlab = "X", ylab = "Probability", ylim = c(0, max(dpois(0:20, gamma_samples))))
+
+for (i in 2:length(gamma_samples)) {
+    lines(0:20, dpois(0:20, gamma_samples[i]), type = "h", col = i)
+}
+
+```
+
+
+```{r}
+# Parameters
+n <- 1000          # Number of samples
+alpha <- 0.1       # Shape parameter for Gamma distribution
+beta <- 0.05       # Rate parameter for Gamma distribution
+
+# Sample from Gamma distribution
+gamma_samples <- rgamma(n, shape = alpha, rate = beta)
+
+# Initialize an empty list to store Poisson distributions
+poisson_distributions <- list()
+
+# Generate and store Poisson distributions
+for (lambda in gamma_samples) {
+    x <- 0:max(gamma_samples)  # X values (range)
+    poisson_distributions[[length(poisson_distributions) + 1]] <- dpois(x, lambda)
+}
+
+# Plotting
+plot(0:max(gamma_samples), poisson_distributions[[1]], type = "h", 
+     main = "Poisson Distribution Sampled from Gamma(0.1, 0.05)",
+     xlab = "X", ylab = "Probability")
+
+# Adding more plots
+for (i in 2:length(poisson_distributions)) {
+    lines(0:max(gamma_samples), poisson_distributions[[i]], type = "h", col = i)
+}
+
+```
+
+
+
