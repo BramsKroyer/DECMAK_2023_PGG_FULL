@@ -1,0 +1,188 @@
+---
+title: "eval"
+output: html_document
+date: "2024-01-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Get libraries
+library(pacman)
+
+pacman::p_load(tidyverse,
+               lme4,
+               ggplot2,
+               R2jags,
+               brms,
+               coda)
+```
+
+
+# Evaluate Model Fit (Convergence Diagnostics)
+```{r make_mcmc}
+# -- Convergence diagnostics
+mcmc_samples <- as.mcmc(samples)
+
+#summary(mcmc_samples) # takes verrry long time to run
+```
+
+```{r gelman_diagnostic}
+# --- Gelman Diagnostic for convergence (get multivariate PSRF)
+gelman_diag <- gelman.diag(mcmc_samples) # above 1.1 indicates a lack of convergence
+#saveRDS(gelman_diag, file = "gelman_diag.rds") # read in with gelman_diag <- readRDS("gelman_diag.rds")
+
+# Multivariate mpsrf:
+(gelman_diag$mpsrf) # this is 1.08 for our estimation model
+
+# Get PSRFs
+psrf_values <- as.data.frame(gelman_diag$psrf) #gelman.diag(mcmc_samples)$psrf
+# Save the dataframe to a CSV file
+#write.csv(psrf_values, "psrf_values.csv", row.names = TRUE)
+
+# Barplot
+barplot(psrf_values$`Point est.`, main = "Potential Scale Reduction Factors \n (x-axis labels only show a subset of parameters due to plot size)", names.arg = rownames(psrf_values),las = 2)
+
+# Show those above 1.1
+psrf_values_above1.1 <- psrf_values %>% filter(`Point est.`>1.1) # n = 2
+
+# Show those above 1.05
+psrf_values_above1.05 <- psrf_values %>% filter(`Point est.`>1.05) # n = 6
+```
+
+```{r ESS}
+# Run ESS
+effective_size_results <- coda::effectiveSize(mcmc_samples)
+
+# Get summary
+summary(effective_size_results)
+
+# Make barplot
+barplot(effective_size_results, main = "Effective Sample Sizes \n (x-axis only shows subset of varnames because of the size)", names.arg = names(effective_size_results), las=2)
+```
+
+```{r traceplots}
+library(bayesplot)
+
+# Get param names
+parameter_names <- varnames(mcmc_samples)
+length(parameter_names)
+
+# Select the parameter with the highest PSRF for rho, omega, and alpha
+rho_params <- rownames(psrf_values)[grepl("rho", rownames(psrf_values))]
+omega_params <- rownames(psrf_values)[grepl("omega", rownames(psrf_values))]
+alpha_params <- rownames(psrf_values)[grepl("alpha", rownames(psrf_values))]
+
+# Find the parameter with the highest PSRF value for each type
+# highest_psrf_alpha <- alpha_params[which.max(psrf_values[alpha_params, "Point est."])] # 1.0091828
+# highest_psrf_rho <- rho_params[which.max(psrf_values[rho_params, "Point est."])] # 1.269526
+# highest_psrf_omega <- omega_params[which.max(psrf_values[omega_params, "Point est."])] # 1.021253
+
+# Find the top three parameters with the highest PSRF values in each group
+top3_psrf_alpha <- alpha_params[order(psrf_values[alpha_params, "Point est."], decreasing = TRUE)[1:3]]
+top3_psrf_rho <- rho_params[order(psrf_values[rho_params, "Point est."], decreasing = TRUE)[1:3]]
+top3_psrf_omega <- omega_params[order(psrf_values[omega_params, "Point est."], decreasing = TRUE)[1:3]]
+
+# Filter parameters where point estimates are lower than 1.1
+rho_params_under_1_1 <- rho_params[psrf_values[rho_params, "Point est."] < 1.1]
+omega_params_under_1_1 <- omega_params[psrf_values[omega_params, "Point est."] < 1.1]
+alpha_params_under_1_1 <- alpha_params[psrf_values[alpha_params, "Point est."] < 1.1]
+
+# Sample one random parameter from each list
+random_rho <- sample(rho_params_under_1_1, 1)
+random_omega <- sample(omega_params_under_1_1, 1)
+random_alpha <- sample(alpha_params_under_1_1, 1)
+
+# Combine the random samples into one vector
+random_traces <- c(random_alpha, random_rho, random_omega)
+
+# 
+# Make plots
+library(bayesplot)
+library(gridExtra)
+library(ggplot2)
+
+turquoise_colors <- c("darkslategray2", "darkslategray3", "darkslategray4")
+
+# Function to create individual trace plots
+create_trace_plot <- function(parameter) {
+  bayesplot::mcmc_trace(mcmc_samples, pars = parameter) +
+    labs(title = paste("Trace for", parameter),
+         subtitle = paste("PSRF:", psrf_values[parameter, "Point est."])) +
+    theme(plot.title = element_text(face = "bold"),
+          plot.subtitle = element_text(face = "plain")) +
+    scale_color_manual(values = turquoise_colors)
+}
+
+
+# Generate plots for alpha
+plots_alpha <- lapply(top3_psrf_alpha, create_trace_plot)
+
+# Generate plots for rho
+plots_rho <- lapply(top3_psrf_rho, create_trace_plot)
+
+# Generate plots for omega
+plots_omega <- lapply(top3_psrf_omega, create_trace_plot)
+
+# Generate plots for random
+plots_random <- lapply(random_traces, create_trace_plot)
+
+# Combine all plots into a 3x3 grid
+grid.arrange(grobs = c(plots_alpha, plots_rho, plots_omega,plots_random), nrow = 4, ncol = 3)
+
+```
+
+
+```{r auto_correlation}
+# --- Checking autocorrelation
+#autocorr.diag(mcmc_samples) # takes very, very long
+library(coda)
+autocorr_results <- coda::autocorr(mcmc_samples, lags = 1) # potentially takes very long
+#saveRDS(autocorr_results, file = "autocorr_results.rds") 
+
+# Check class
+class(autocorr_results)
+
+# Extract just the diagonal (each vector contains the autocorrelation at lag 1 for each parameter)
+autocorr_diag <- lapply(autocorr_results, function(x) diag(x[,,1]))
+
+# Do a summary for each
+summary(as.numeric(autocorr_diag[[1]]))
+summary(as.numeric(autocorr_diag[[2]]))
+summary(as.numeric(autocorr_diag[[3]]))
+
+# Autocorr_diag is a list of vectors, where each vector contains autocorrelation at lag 1 for each parameter. We can plot with barplots:
+par(mfrow = c(3, 1))
+
+# Now plot each autocorrelation bar plot with turquoise color; they will be arranged into the grid automatically
+barplot(autocorr_diag[[1]], main="Autocorrelation at lag 1, chain 1", xlab="Parameter Index", ylab="Autocorrelation", col="turquoise")
+barplot(autocorr_diag[[2]], main="Autocorrelation at lag 1, chain 2", xlab="Parameter Index", ylab="Autocorrelation", col="turquoise")
+barplot(autocorr_diag[[3]], main="Autocorrelation at lag 1, chain 3", xlab="Parameter Index", ylab="Autocorrelation", col="turquoise")
+
+# Reset the plotting layout to default
+par(mfrow = c(1, 1))
+
+```
+
+```{r inspect_autocorr}
+# Defining a threshold for outliers
+threshold <- 0.2
+
+# Find indices where autocorrelation exceeds the threshold in absolute value for the first chain
+outliers_chain1 <- which(abs(autocorr_diag[[1]]) > threshold)
+
+# Repeat for the second and third chains
+outliers_chain2 <- which(abs(autocorr_diag[[2]]) > threshold)
+outliers_chain3 <- which(abs(autocorr_diag[[3]]) > threshold)
+
+# Find outliers that are common across all chains
+common_outliers <- Reduce(intersect, list(outliers_chain1, outliers_chain2, outliers_chain3))
+
+# Retrieve the parameter names for the common outliers using the varnames function
+parameter_names <- varnames(mcmc_samples)
+common_outlier_names <- parameter_names[common_outliers]
+
+```
+
