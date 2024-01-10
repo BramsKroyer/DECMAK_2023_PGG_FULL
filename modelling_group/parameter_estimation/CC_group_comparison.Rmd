@@ -1,0 +1,253 @@
+# Group comparison
+
+This markdown contains code for running parameter estimation on group comparison between high and low strategy conditions
+
+```{r}
+seed_id = 1998
+set.seed(seed_id)
+
+setwd('/work/KlaraKrøyerFomsgaard#1926/DecMak_exam')
+
+install.packages('R2jags')
+pacman::p_load(parallel, polspline, ggplot2, glue, tidyverse,R2jags)
+
+```
+
+```{r}
+# defining a function for calculating the maximum of the posterior density (not exactly the same as the mode)
+MPD <- function(x) {
+  density(x)$x[which(density(x)$y==max(density(x)$y))]
+}
+```
+
+```{r}
+# Load data and subset
+
+df <- read.csv('/work/KlaraKrøyerFomsgaard#1926/DecMak_exam/data/DMdata.csv')
+
+DMdata_strat <- df %>% filter(condition == "STRAT")
+
+# Get binary score for strategy level
+highstrat <- DMdata_strat %>% filter(group_ability_bin == 'HIGH_STRAT')
+lowstrat <- DMdata_strat %>% filter(group_ability_bin == 'LOW_STRAT')
+
+```
+
+
+```{r}
+# Create variables for High Strategy/Low Strategy groups 
+  # - ngroups
+  # - ntrials
+  # - groupSize
+  # - Ga (avg contribution in the group without yourself)
+  # - c (own contribution)
+
+# Function for creating variables
+source('get_vars_func.R')
+
+highstrat_vars <- get_vars(highstrat)
+lowstrat_vars <- get_vars(lowstrat)
+
+# The same for both conditions
+ntrials <- highstrat_vars$ntrials
+groupSize <- highstrat_vars$groupSize
+
+# High Strategy
+ngroups_gr1 <- highstrat_vars$ngroups
+Ga_gr1 <- highstrat_vars$Ga
+c_gr1 <- highstrat_vars$c
+
+# Low Strategy
+ngroups_gr2 <- lowstrat_vars$ngroups
+Ga_gr2 <- lowstrat_vars$Ga
+c_gr2 <- lowstrat_vars$c
+
+```
+
+## SIMPLE COMPARISON
+```{r}
+# --- Inferred params
+
+# HIGH STRAT
+ngroups <- ngroups_gr1
+c = c_gr1
+Ga = Ga_gr1
+# -- DEFINING PARAMS
+params <- c("mu_omega", "mu_rho", "mu_alpha","lambda_omega","lambda_rho","lambda_alpha")
+data_list_gr1 <- list("groupSize","ngroups", "ntrials","c","Ga")  
+
+samples_gr1 <- jags.parallel(data = data_list_gr1,
+                inits=NULL,
+                parameters.to.save = params,
+                model.file ="CC_model_group.txt", 
+                n.chains = 3,
+                n.iter=40000, n.burnin=8000, n.thin=1, n.cluster = 3)
+  
+# Inferred parameter values
+## Mu
+Y_gr1 <- samples_gr1$BUGSoutput$sims.list
+infer_mu_alpha_gr1 <- MPD(Y_gr1$mu_alpha)
+infer_mu_rho_gr1 <- MPD(Y_gr1$mu_rho)
+infer_mu_omega_gr1 <- MPD(Y_gr1$mu_omega)
+  
+## Lambda
+infer_lambda_alpha_gr1 <- MPD(Y_gr1$lambda_alpha)
+infer_lambda_rho_gr1 <- MPD(Y_gr1$lambda_rho)
+infer_lambda_omega_gr1 <- MPD(Y_gr1$lambda_omega)
+
+# LOW STRAT
+ngroups <- ngroups_gr2
+c = c_gr2
+Ga = Ga_gr2
+# -- DEFINING PARAMS
+data_list_gr2 <- list("groupSize","ngroups", "ntrials","c","Ga")  
+
+samples_gr2 <- jags.parallel(data = data_list_gr2,
+                inits=NULL,
+                parameters.to.save = params,
+                model.file ="CC_model_group.txt", 
+                n.chains = 3,
+                n.iter=40000, n.burnin=8000, n.thin=1, n.cluster = 3)
+  
+# Inferred parameter values
+## Mu
+Y_gr2 <- samples_gr2$BUGSoutput$sims.list
+infer_mu_alpha_gr2 <- MPD(Y_gr2$mu_alpha)
+infer_mu_rho_gr2 <- MPD(Y_gr2$mu_rho)
+infer_mu_omega_gr2 <- MPD(Y_gr2$mu_omega)
+  
+## Lambda
+infer_lambda_alpha_gr2 <- MPD(Y_gr2$lambda_alpha)
+infer_lambda_rho_gr2 <- MPD(Y_gr2$lambda_rho)
+infer_lambda_omega_gr2 <- MPD(Y_gr2$lambda_omega)
+
+
+```
+
+```{r}
+# Trace plots for inspection
+# High strat
+# mu
+par(mfrow=c(1,3))
+
+traceplot(samples_gr1, mfrow = c(1, 1),"mu_rho")
+traceplot(samples_gr1, mfrow = c(1, 1),"mu_omega")
+traceplot(samples_gr1, mfrow = c(1, 1),"mu_alpha")
+
+# lambda
+traceplot(samples_gr1, mfrow = c(1, 1),"lambda_rho")
+traceplot(samples_gr1, mfrow = c(1, 1),"lambda_omega")
+traceplot(samples_gr1, mfrow = c(1, 1),"lambda_alpha")
+
+# low strat
+# mu
+par(mfrow=c(1,3))
+
+traceplot(samples_gr2, mfrow = c(1, 1),"mu_rho")
+traceplot(samples_gr2, mfrow = c(1, 1),"mu_omega")
+traceplot(samples_gr2, mfrow = c(1, 1),"mu_alpha")
+
+# lambda
+traceplot(samples_gr2, mfrow = c(1, 1),"lambda_rho")
+traceplot(samples_gr2, mfrow = c(1, 1),"lambda_omega")
+traceplot(samples_gr2, mfrow = c(1, 1),"lambda_alpha")
+
+
+library(coda)
+mcmc_samples <- as.mcmc(samples)
+```
+```{r}
+# ----- PLOTS
+
+par(mfrow=c(2,2))
+
+# ------ Rho
+MAP_rho_gr1 <- MPD(Y_gr1$mu_rho)
+gr1_rho_cred = quantile(Y_gr1$mu_rho,c(0.025,0.975))
+
+MAP_rho_gr2 <- MPD(Y_gr2$mu_rho)
+gr2_rho_cred = quantile(Y_gr2$mu_rho,c(0.025,0.975))
+
+# Convert to dataframe
+df_rho <- data.frame(mu_rho_gr1 = Y_gr1$mu_rho, mu_rho_gr2 =  Y_gr2$mu_rho)
+
+# Plotting using ggplot2
+pl_rho_comp <- ggplot(df_rho) +
+  # Posteriors
+  geom_density(aes(x = mu_rho_gr2), fill = 'darkslategray4',color = 'darkslategray4', alpha = 0.3 ) +
+  geom_density(aes(x = mu_rho_gr1), fill = 'darkslategray3',color = 'darkslategray3', alpha = 0.3 ) +
+  # CIs and MPD points
+  geom_segment(x=gr2_rho_cred[1],xend = gr2_rho_cred[2],y=0,yend=0,color="red",size=1,lineend="round",alpha = 0.5) +
+  geom_segment(x=gr1_rho_cred[1],xend = gr1_rho_cred[2],y=0,yend=0,color="black",size=0.5,lineend="round",alpha = 0.5) +
+  geom_point(aes(x=MAP_rho_gr2, y=0), colour="red") +
+  geom_point(aes(x=MAP_rho_gr1, y=0), colour="black") +
+  # Aesthetics
+  labs(title = "Group Comparison: Mu Rho",
+       subtitle= "Dark blue = Low strategy, Light blue = High strategy",
+       x = "Mu Rho",
+       y = "Density") +
+  theme_minimal() +
+  ylim(0, 10)+
+  theme(plot.title = element_text(face = "bold"))
+
+# ------ Omega
+MAP_omega_gr1 <- MPD(Y_gr1$mu_omega)
+gr1_omega_cred = quantile(Y_gr1$mu_omega,c(0.025,0.975))
+
+MAP_omega_gr2 <- MPD(Y_gr2$mu_omega)
+gr2_omega_cred = quantile(Y_gr2$mu_omega,c(0.025,0.975))
+
+# Convert to dataframe
+df_rho <- data.frame(mu_rho_gr1 = Y_gr1$mu_rho, mu_rho_gr2 =  Y_gr2$mu_rho)
+
+# Plotting using ggplot2
+pl_omega_comp <- ggplot(df_omega) +
+  # Posteriors
+  geom_density(aes(x = mu_omega_gr2), fill = 'darkslategray4',color = 'darkslategray4', alpha = 0.3 ) +
+  geom_density(aes(x = mu_omega_gr1), fill = 'darkslategray3',color = 'darkslategray3', alpha = 0.3 ) +
+  # CIs and MPD points
+  geom_segment(x=gr2_omega_cred[1],xend = gr2_omega_cred[2],y=0,yend=0,color="red",size=1,lineend="round",alpha = 0.5) +
+  geom_segment(x=gr1_omega_cred[1],xend = gr1_omega_cred[2],y=0,yend=0,color="black",size=0.5,lineend="round",alpha = 0.5) +
+  geom_point(aes(x=MAP_omega_gr2, y=0), colour="red") +
+  geom_point(aes(x=MAP_omega_gr1, y=0), colour="black") +
+  # Aesthetics
+  labs(title = "Group Comparison: Mu Omega",
+       subtitle= "Dark blue = Low strategy, Light blue = High strategy",
+       x = "Mu Omega",
+       y = "Density") +
+  theme_minimal() +
+  ylim(0, 10)+
+  theme(plot.title = element_text(face = "bold"))
+
+
+# Alpha
+MAP_alpha_gr1 <- MPD(Y_gr1$mu_alpha)
+gr1_alpha_cred = quantile(Y_gr1$mu_alpha,c(0.025,0.975))
+
+MAP_alpha_gr2 <- MPD(Y_gr2$mu_alpha)
+gr2_alpha_cred = quantile(Y_gr2$mu_alpha,c(0.025,0.975))
+
+
+```
+
+
+
+```{r}
+# ---- CALCULATE POSTERIOR OVERLAP COEFFICIENT
+# https://rdrr.io/cran/bayestestR/man/overlap.html
+
+install.packages('bayestestR')
+library(bayestestR)
+
+overlap_mu_rho <- overlap(Y_gr1$mu_rho, Y_gr2$mu_rho)
+plot(overlap_mu_rho)
+
+overlap_mu_omega <- overlap(Y_gr1$mu_omega, Y_gr2$mu_omega)
+plot(overlap_mu_omega)
+
+
+```
+
+
+
+
