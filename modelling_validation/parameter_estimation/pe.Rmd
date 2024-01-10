@@ -1,0 +1,728 @@
+---
+title: "Parameter Estimation"
+author: "Pernille Brams & Klara Krøyer Fomsgaard"
+date: "4/1/2024"
+output:
+    html_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Setting the root directory
+setwd("/Users/pernillebrams/Desktop/AARHUS_UNIVERSITY/kandidat/decision_making/decision_making/exam_pref_strat/DecMak_2023_PREFSTRAT/JANUARY")
+
+# Clearing the environment
+rm(list=ls())
+
+```
+
+## Setting up
+```{r setup}
+# Get libraries
+library(pacman)
+
+pacman::p_load(tidyverse,
+               lme4,
+               ggplot2,
+               R2jags,
+               brms,
+               coda)
+
+# Get in preprocessed data
+# - Full data
+GLMdata <- read.csv("data/preprocessed/GLMdata.csv")
+
+# - Subset
+DMdata <- read.csv("data/preprocessed/DMdata.csv")
+
+# - Contributions
+contributions <- read.csv("data/preprocessed/contributions.csv")
+
+```
+
+# 1. Get variables needed for modelling
+We need
+- ngroups
+- ntrials
+- groupSize
+- Ga (avg contribution in the group without yourself)
+- c (own contribution)
+
+The script get_vars.R makes these for us.
+
+First, let's get an overview: 
+```{r get_vars}
+# We have these cols
+colnames(DMdata)
+
+# Overview + sanity check
+length(unique(DMdata$id)) # 192
+length(unique(DMdata$idgroup)) # 64
+length(unique(DMdata$sessionid)) # 8
+length(unique(DMdata$period)) # 15
+length(unique(DMdata$grouptype)) # 4
+length(unique(DMdata$condition)) # 3
+length(unique(DMdata$type)) # 4
+length(unique(DMdata$subject)) # 24
+
+max(unique(DMdata$sum_contribution_g)) # 60
+summary(unique(DMdata$avg_contribution_g)) # 0-20
+max(unique(DMdata$sum_contribution_g)) # 60
+
+# Get vars from DMdata
+source("scripts/get_vars.R")
+
+# Define MPD for later usage
+MPD <- function(x) {
+  density(x)$x[which(density(x)$y==max(density(x)$y))]
+}
+
+```
+
+# 2. Fit model
+```{r fitting_jags}
+# Define data list
+data_list <- list(
+  ngroups = ngroups,     # Should be 64
+  ntrials = ntrials,     # Should be 15
+  groupSize = groupSize, # Should be 3
+  Ga = Ga,               # Should have dim(Ga) = 3 15 64
+  c = c)                 # Should have dim(c) = 3 15 64
+
+# Check dims
+ngroups
+ntrials
+groupSize
+dim(Ga)
+dim(c)
+
+# Define parameters of interest
+params <- c("omega", "rho", "alpha")
+
+# Run model
+samples <- jags(data = data_list,
+                inits=NULL,
+                parameters.to.save = params,
+                model.file ="modelling/parameter_estimation/CC_model_individual.txt", 
+                n.chains = 3,
+                n.iter=40000, n.burnin=8000, n.thin=1) #, n.cluster=3)
+
+dim(samples$BUGSoutput$sims.list$alpha) #  96000     3    64
+dim(samples$BUGSoutput$sims.list$rho)   #  96000     3    64
+
+# posterior plot code put somewhere
+# plot(density(rnorm(10000,0,1/sqrt(0.147))),ylim=c(0,.7),main="alpha")
+# lines(density(Y$betaX_alpha),col="red")
+
+```
+
+# 3. Evaluate Model Fit (Convergence Diagnostics)
+```{r make_mcmc}
+# -- Convergence diagnostics
+mcmc_samples <- as.mcmc(samples)
+#saveRDS(samples, file = "samples.rds")
+#saveRDS(mcmc_samples, file = "mcmc_samples.rds")
+
+#summary(mcmc_samples) # takes long time to run
+```
+
+```{r gelman_diagnostic}
+# --- Gelman Diagnostic for convergence (get multivariate PSRF)
+gelman_diag <- gelman.diag(mcmc_samples) # above 1.1 indicates a lack of convergence
+#saveRDS(gelman_diag, file = "gelman_diag.rds") # read in with gelman_diag <- readRDS("gelman_diag.rds")
+
+# Multivariate mpsrf:
+(gelman_diag$mpsrf)
+
+# Get PSRFs
+psrf_values <- as.data.frame(gelman_diag$psrf) #gelman.diag(mcmc_samples)$psrf
+# Save the dataframe to a CSV file
+write.csv(psrf_values, "psrf_values.csv", row.names = TRUE)
+
+# Barplot
+barplot(psrf_values$`Point est.`, main = "Potential Scale Reduction Factors \n (x-axis labels only show a subset of parameters due to plot size)", names.arg = rownames(psrf_values),las = 2)
+
+# Show those above 1.1
+psrf_values_above1.1 <- psrf_values %>% filter(`Point est.`>1.1) # n = 2
+
+# Show those above 1.05
+psrf_values_above1.05 <- psrf_values %>% filter(`Point est.`>1.05) # n = 6
+```
+
+```{r auto_correlation}
+# --- Checking autocorrelation
+#autocorr.diag(mcmc_samples) # takes very, very long
+library(coda)
+autocorr_results <- coda::autocorr(mcmc_samples, lags = 1)
+#saveRDS(autocorr_results, file = "autocorr_results.rds") 
+
+# Check class
+class(autocorr_results)
+
+# Extract just the diagonal (each vector contains the autocorrelation at lag 1 for each parameter)
+autocorr_diag <- lapply(autocorr_results, function(x) diag(x[,,1]))
+
+# Do a summary for each
+summary(as.numeric(autocorr_diag[[1]]))
+summary(as.numeric(autocorr_diag[[2]]))
+summary(as.numeric(autocorr_diag[[3]]))
+
+# Autocorr_diag is a list of vectors, where each vector contains autocorrelation at lag 1 for each parameter. We can plot with barplots:
+par(mfrow = c(3, 1))
+
+# Now plot each autocorrelation bar plot with turquoise color; they will be arranged into the grid automatically
+barplot(autocorr_diag[[1]], main="Autocorrelation at lag 1, chain 1", xlab="Parameter Index", ylab="Autocorrelation", col="turquoise")
+barplot(autocorr_diag[[2]], main="Autocorrelation at lag 1, chain 2", xlab="Parameter Index", ylab="Autocorrelation", col="turquoise")
+barplot(autocorr_diag[[3]], main="Autocorrelation at lag 1, chain 3", xlab="Parameter Index", ylab="Autocorrelation", col="turquoise")
+
+# Reset the plotting layout to default
+par(mfrow = c(1, 1))
+
+```
+
+```{r inspect_autocorr}
+# Defining a threshold for outliers
+threshold <- 0.2
+
+# Find indices where autocorrelation exceeds the threshold in absolute value for the first chain
+outliers_chain1 <- which(abs(autocorr_diag[[1]]) > threshold)
+
+# Repeat for the second and third chains
+outliers_chain2 <- which(abs(autocorr_diag[[2]]) > threshold)
+outliers_chain3 <- which(abs(autocorr_diag[[3]]) > threshold)
+
+# Find outliers that are common across all chains
+common_outliers <- Reduce(intersect, list(outliers_chain1, outliers_chain2, outliers_chain3))
+
+# Retrieve the parameter names for the common outliers using the varnames function
+parameter_names <- varnames(mcmc_samples)
+common_outlier_names <- parameter_names[common_outliers]
+```
+
+```{r ESS}
+# Run ESS
+effective_size_results <- coda::effectiveSize(mcmc_samples)
+
+# Get summary
+summary(effective_size_results)
+
+# Make df to inspect
+effective_size_results_df <- data.frame(effective_size_results)
+
+# Make barplot
+barplot(effective_size_results, main = "Effective Sample Sizes \n (x-axis only shows subset of varnames because of the size)", names.arg = names(effective_size_results), las=2)
+```
+
+```{r traceplots}
+library(bayesplot)
+
+# Get param names
+parameter_names <- varnames(mcmc_samples)
+length(parameter_names)
+
+# Select the parameter with the highest PSRF for rho, omega, and alpha
+rho_params <- rownames(psrf_values)[grepl("rho", rownames(psrf_values))]
+omega_params <- rownames(psrf_values)[grepl("omega", rownames(psrf_values))]
+alpha_params <- rownames(psrf_values)[grepl("alpha", rownames(psrf_values))]
+
+# Find the top three parameters with the highest PSRF values in each group
+top3_psrf_alpha <- alpha_params[order(psrf_values[alpha_params, "Point est."], decreasing = TRUE)[1:3]]
+top3_psrf_rho <- rho_params[order(psrf_values[rho_params, "Point est."], decreasing = TRUE)[1:3]]
+top3_psrf_omega <- omega_params[order(psrf_values[omega_params, "Point est."], decreasing = TRUE)[1:3]]
+
+# Filter parameters where point estimates are lower than 1.1
+rho_params_under_1_1 <- rho_params[psrf_values[rho_params, "Point est."] < 1.1]
+omega_params_under_1_1 <- omega_params[psrf_values[omega_params, "Point est."] < 1.1]
+alpha_params_under_1_1 <- alpha_params[psrf_values[alpha_params, "Point est."] < 1.1]
+
+# Sample one random parameter from each list
+random_rho <- sample(rho_params_under_1_1, 1)
+random_omega <- sample(omega_params_under_1_1, 1)
+random_alpha <- sample(alpha_params_under_1_1, 1)
+
+# Combine the random samples into one vector
+random_traces <- c(random_alpha, random_rho, random_omega)
+
+# 
+# Make plots
+library(bayesplot)
+library(gridExtra)
+library(ggplot2)
+
+turquoise_colors <- c("darkslategray2", "darkslategray3", "darkslategray4")
+
+# Function to create individual trace plots
+create_trace_plot <- function(parameter) {
+  bayesplot::mcmc_trace(mcmc_samples, pars = parameter) +
+    labs(title = paste("Trace for", parameter),
+         subtitle = paste("PSRF:", psrf_values[parameter, "Point est."])) +
+    theme(plot.title = element_text(face = "bold"),
+          plot.subtitle = element_text(face = "plain")) +
+    scale_color_manual(values = turquoise_colors)
+}
+
+
+# Generate plots for alpha
+plots_alpha <- lapply(top3_psrf_alpha, create_trace_plot)
+
+# Generate plots for rho
+plots_rho <- lapply(top3_psrf_rho, create_trace_plot)
+
+# Generate plots for omega
+plots_omega <- lapply(top3_psrf_omega, create_trace_plot)
+
+# Generate plots for random
+plots_random <- lapply(random_traces, create_trace_plot)
+
+# Combine all plots into a 3x3 grid
+grid.arrange(grobs = c(plots_alpha, plots_rho, plots_omega,plots_random), nrow = 4, ncol = 3)
+
+```
+
+```{r}
+parameter_names <- varnames(mcmc_samples)
+print(parameter_names)
+length(parameter_names)  # Gives you the count of parameters
+```
+
+# 4. Preprocess for lm()
+We need to make a subject-lookup table to get the ids and match them with the right values.
+
+## Subject lookup table [RUN POST-FIT OF SAMPLES]
+```{r subj_lookup}
+# Extract the relevant columns from DMdata
+subject_lookup <- DMdata[, c("id", "group_subjectid", "idgroup", "type", "grouptype", "condition")]
+
+# Remove duplicate rows
+subject_lookup <- unique(subject_lookup)
+
+# Apply the idgroup mapping to convert idgroup values to sequential indices
+subject_lookup$idgroup_mapped <- idgroup_mapping[as.character(subject_lookup$idgroup)]
+
+# Arrange the lookup table (optional, for easier readability)
+subject_lookup <- subject_lookup[order(subject_lookup$idgroup_mapped, subject_lookup$group_subjectid),]
+
+# View the first few rows of the lookup table
+head(subject_lookup)
+
+# ---- Get their original id from the lookup when pulling out rho
+# Initialize a dataframe to store the results
+rho_values_df <- data.frame(
+  original_id = integer(), 
+  rho_mode = numeric(), 
+  matrix_position = character()
+)
+
+# Loop over each combination of group_subjectid and idgroup
+for (g in seq_len(ngroups)) {
+    for (s in seq_len(groupSize)) {
+        
+      # Get the original subject ID
+        original_id <- subset(subject_lookup, idgroup_mapped == g & group_subjectid == s)$id
+        
+        # Extract the rho values for this subject
+        rho_values <- samples$BUGSoutput$sims.list$rho[, s, g]
+        
+        # Compute the mode of the rho values
+        rho_mode <- MPD(rho_values)
+
+        # Create a string representation of the matrix position
+        matrix_pos <- paste("(", s, ",", g, ")", sep = "")
+
+        # Combine the original ID, rho mode, and matrix position
+        rho_values_df <- rbind(rho_values_df, data.frame(
+          original_id = original_id, 
+          rho_mode = rho_mode, 
+          matrix_position = matrix_pos
+        ))
+    }
+}
+
+head(rho_values_df)
+```
+
+```{r make_lms}
+# Initialize a dataframe to store results
+results <- data.frame(id = unique(contributions$id), 
+                      beta_slope = numeric(length(unique(contributions$id))),
+                      adj_r2 = numeric(length(unique(contributions$id))))
+
+# Initialize a list to store model summaries
+model_summaries <- list()
+
+# Initialize a list to store residual plots
+residual_plots <- list()
+
+# Initialize a list to store Q-Q plots
+qq_plots <- list()
+
+# Loop through each unique ID
+for (i in seq_along(results$id)) {
+    # Filter data for the current ID
+    filtered_data <- contributions %>% filter(id == results$id[i])
+    
+    # Fit the model without an intercept
+    model <- lm(preferred_contribution ~ avg_group_contr + 0, data = filtered_data)
+    
+    # Store the slope in the results dataframe
+    results$beta_slope[i] <- coef(model)["avg_group_contr"]
+    results$adj_r2[i] <- summary(model)$adj.r.squared
+    
+    # Replace NA or NaN in adj_r2 with 0
+    if (is.na(results$adj_r2[i]) || is.nan(results$adj_r2[i])) {
+            results$adj_r2[i] <- 0
+    }
+    
+    # Store the summary of the model in the list
+    model_summaries[[as.character(results$id[i])]] <- summary(model)
+    
+    # Calculate residuals for the current model
+    #model_residuals <- residuals(model)
+    # Create a data frame with residuals
+    residuals_df <- data.frame(residuals = residuals(model))
+    
+    # Generate and store the Q-Q plot
+    p <- ggplot(residuals_df, aes(sample = residuals)) +
+         stat_qq() +
+         stat_qq_line(col = "red") +
+         labs(title = paste("Q-Q Plot for Residuals of ID", results$id[i]),
+              x = "Theoretical Quantiles",
+              y = "Sample Quantiles")
+
+    qq_plots[[i]] <- p
+    # # Generate a residual plot for the current model
+    # p <- ggplot(filtered_data, aes_string(x = "avg_group_contr", y = residuals(model))) +
+    #      geom_point() +
+    #      geom_hline(yintercept = 0, linetype = "dashed") +
+    #      labs(title = paste("Residual Plot for ID", results$id[i]),
+    #           x = "Average Group Contribution",
+    #           y = "Residuals")
+    # residual_plots[[i]] <- p
+    
+    #  # Generate a Q-Q plot for the current model's residuals
+    # p <- ggplot2::ggplot() +
+    #      ggplot2::geom_qq(aes(sample = model_residuals)) +
+    #      ggplot2::geom_qq_line(aes(sample = model_residuals), col = "red") +
+    #      ggplot2::labs(title = paste("Q-Q Plot for Residuals of ID", results$id[i]),
+    #                    x = "Theoretical Quantiles",
+    #                    y = "Sample Quantiles")
+    # 
+    # # Add the plot to the list
+    # qq_plots[[i]] <- p
+}
+
+# A lot of them have zeros.Inspecting:
+summary(lm(preferred_contribution ~ avg_group_contr + 0, data = contributions %>% filter(id == 7)))
+#results_zeros <- results %>% filter(beta_slope == 0)
+#length(unique(results_zeros$id))
+print(results)
+
+```
+
+```{r}
+# Plot beta slope with R^2
+results <- merge(contributions,results, by = "id")
+
+# 'type' and 'grouptype' are columns in rho_and_beta dataframe
+results %>% ggplot(aes(x = adj_r2, y = beta_slope, color = type)) +
+  geom_point() +
+  #geom_abline(slope = 1, intercept = 0, color = "blue", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Scatter Plot of adj_r2 vs. beta_slope from contribution table models",
+    subtitle = "Point in 0,0 is 39 players who constantly gave 0 in the contribution table \n (perfect freeriders)",
+    x = "adj_r2",
+    y = "beta_slope"
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  scale_shape_manual(values = c(16, 17, 18, 19, 20))
+```
+
+```{r merging}
+
+# ---------- now we have two dataframes: 
+results # the lm results for each id
+rho_values_df # the rho values for each id
+
+# MERGE TO HAVE BOTH RHO AND BETA
+rho_and_beta <- merge(results,
+                     rho_values_df,
+                     by.x = "id",
+                     by.y = "original_id") %>%
+  
+                      rename(#beta_slope = slope,
+                             rho_mode_from_jags = rho_mode)
+# Make beta_slope_norm01
+rho_and_beta <- rho_and_beta %>% 
+  mutate(beta_slope_norm01 = (beta_slope - min(beta_slope)) / (max(beta_slope) - min(beta_slope)))
+
+# Get grouptypes on
+grouptypes_id <- DMdata %>%
+  select(grouptype, id) %>%
+  distinct(id, .keep_all = TRUE)
+
+# Merge it on
+rho_and_beta <- merge(rho_and_beta,grouptypes_id, by = 'id')
+
+# Inspect
+colnames(rho_and_beta)
+head(rho_and_beta)
+
+# Plotting densities for inspection
+plot(density(rho_and_beta$rho_mode_from_jags))
+plot(hist(rho_and_beta$rho_mode_from_jags))
+
+plot(density(rho_and_beta$beta_slope_norm01))
+plot(hist(rho_and_beta$beta_slope_norm01))
+```
+
+# 5. Correlation Analysis
+```{r}
+# Reduce dataset to only have one
+rho_and_beta_192 <- rho_and_beta %>%
+                    select(id, 
+                           beta_slope, 
+                           beta_slope_norm01, 
+                           rho_mode_from_jags) %>% filter(!duplicated(id))
+
+# Looking at subject nr 7 (freerider, but with near perfect CC behaviour)
+rho_and_beta_test <- rho_and_beta %>% filter(id == 7)
+DMdata_test <- DMdata %>% filter(id == 7)
+
+# Variables to use
+rho_and_beta_192$beta_slope_norm01
+rho_and_beta_192$rho_mode_from_jags
+
+# -- Checking normality
+library(pastecs)
+
+# - Beta slopes
+stat.desc(rho_and_beta_192$beta_slope_norm01, basic = TRUE, desc = TRUE, norm = TRUE, p = 0.95) # not normal
+hist(rho_and_beta_192$beta_slope_norm01)
+qqnorm(rho_and_beta_192$beta_slope_norm01)
+qqline(rho_and_beta_192$beta_slope_norm01)
+
+# - Rhos
+stat.desc(rho_and_beta_192$rho_mode_from_jags, basic = TRUE, desc = TRUE, norm = TRUE, p = 0.95) # not normal
+hist(rho_and_beta_192$rho_mode_from_jags)
+qqnorm(rho_and_beta_192$rho_mode_from_jags)
+qqline(rho_and_beta_192$rho_mode_from_jags)
+
+# -- Checking ranks
+sum(table(rho_and_beta_192$beta_slope_norm01) > 1)
+sum(table(rho_and_beta_192$rho_mode_from_jags) > 1)
+
+# -- Investigating monotonic relationship
+plot(rho_and_beta_192$beta_slope_norm01, rho_and_beta_192$rho_mode_from_jags, main = "Scatterplot", xlab = "beta-slopes-norm01", ylab = "Rhos from Jags", pch = 19)
+
+```
+
+```{r}
+# Spearman's Rho
+cor_test_result <- cor.test(rho_and_beta_192$beta_slope_norm01, rho_and_beta_192$rho_mode_from_jags, method = "spearman")
+cor_test_result
+
+# Get type vars on
+DMdata_vars <- DMdata %>% select(id,
+                                 type,
+                                 grouptype,
+                                 bin_strategic_ability,
+                                 group_ability_cont,
+                                 group_ability_cat) %>% filter(!duplicated(id))
+
+rho_and_beta_192_ <- merge(rho_and_beta_192, DMdata_vars, by = 'id')
+
+# Custom color palette
+turquoise_palette <- c("darkslategray1", "darkslategray", "darkslategray4", "darkturquoise")
+red_palette <- c("red", "darkred", "maroon", "chocolate")
+
+# Plot 1: Color by 'type'
+plot1 <- rho_and_beta_192_ %>%
+  ggplot(aes(x = beta_slope_norm01, y = rho_mode_from_jags, color = type)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    #title = "Beta-slopes (stated preferences) vs. \nRhos (readiness to cooperate)",
+    subtitle = "Coloring for preference type (as per contribution tables).",
+    x = "Beta-slope (from contribution table)",
+    y = "MPD of rho post. per subject (from JAGS model)"
+  ) +
+  scale_color_manual(values = turquoise_palette) +
+  theme(plot.title = element_text(face = "bold"))
+
+# Plot 2: Shape by 'grouptype'
+plot2 <- rho_and_beta_192_ %>%
+  ggplot(aes(x = beta_slope_norm01, y = rho_mode_from_jags, color = grouptype)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    #title = "Beta-slopes (stated preferences) vs. \nRhos (readiness to cooperate)",
+    subtitle = "Color for grouptype.",
+    x = "Beta-slope (from contribution table)",
+    #y = "MPD of rho per subject (from JAGS model)"
+    y = NULL
+  ) +
+  #scale_shape_manual(values = c(16, 17, 18, 19)) +
+  scale_color_manual(values = red_palette) +
+  theme(plot.title = element_text(face = "bold"))
+
+# Combine the two plots in a grid with one common title
+library(grid)
+grid.arrange(
+  plot1, plot2,
+  nrow = 1,
+  top = textGrob("Beta-slopes (stated preferences) vs. inferred rhos (readiness to cooperate)",
+                 gp = gpar(fontface = "bold", fontsize = 14))
+)
+
+```
+
+# 6. Post-hoc part A
+```{r}
+# Spearman's Rho using non-normalised Betas
+cor_test_result <- cor.test(rho_and_beta_192$beta_slope, rho_and_beta_192$rho_mode_from_jags, method = "spearman")
+cor_test_result
+
+# Kendall's tau using non-normalised Betas
+cor_test_result <- cor.test(rho_and_beta_192$beta_slope, rho_and_beta_192$rho_mode_from_jags, method = "kendall")
+cor_test_result
+
+# Kendall's tau using normalised Betas
+cor_test_result <- cor.test(rho_and_beta_192$beta_slope_norm01, rho_and_beta_192$rho_mode_from_jags, method = "kendall")
+cor_test_result
+
+```
+
+```{r}
+ 
+both_slopes_with_original_ids <- both_slopes_with_original_ids %>% rename(original_id = id_proper)
+rho_and_beta_all <- merge(both_slopes_with_original_ids, rho_and_beta, by = "original_id")
+
+# COR TEST
+# - Seeing whether their actual behaviour from the game (as per an lmer() correlated with the beta_slope from their contribtuion tables)
+cor_test_result <- cor.test(rho_and_beta_all$beta_slope, rho_and_beta_all$slope.x, method = "kendall")
+cor_test_result 
+
+# - Seeing whether slope from game behavioru and rho from game behavioru correlate
+cor_test_result <- cor.test(rho_and_beta_all$rho_mode_from_jags, rho_and_beta_all$slope.x, method = "kendall")
+cor_test_result 
+
+# - Seeing whether their contribution table beta correlates with rho from cog models
+cor_test_result <- cor.test(rho_and_beta_all$rho_mode_from_jags, rho_and_beta_all$beta_slope, method = "kendall")
+cor_test_result 
+
+```
+
+# 7. Post-hoc part B: do lm()s for actual in-game contributions
+```{r}
+ingame_contributions <- DMdata %>% select(id,
+                                          idgroup,
+                                          type,
+                                          period,
+                                          contribution_id,
+                                          avg_contr_g_others)
+
+
+# Initialize a dataframe to store results
+results_ingame_contributions <- data.frame(id = unique(ingame_contributions$id), 
+                                           beta_slope_ingame = numeric(length(unique(ingame_contributions$id))),
+                                           adj_r2_ingame = numeric(length(unique(ingame_contributions$id))))
+
+# Initialize a list to store model summaries
+model_summaries <- list()
+
+# Loop through each unique ID
+for (i in seq_along(results_ingame_contributions$id)) {
+    # Filter data for the current ID
+    filtered_data <- ingame_contributions %>% filter(id == results_ingame_contributions$id[i])
+    
+    # Fit the model without an intercept
+    model <- lm(contribution_id ~ avg_contr_g_others, data = filtered_data)
+    
+    # Store the slope in the results dataframe
+    results_ingame_contributions$beta_slope_ingame[i] <- coef(model)["avg_contr_g_others"]
+    results_ingame_contributions$adj_r2_ingame[i] <- summary(model)$adj.r.squared
+    
+    # Replace NA or NaN in adj_r2 with 0
+    if (is.na(results_ingame_contributions$adj_r2_ingame[i]) || is.nan(results_ingame_contributions$adj_r2_ingame[i])) {
+            results_ingame_contributions$adj_r2_ingame[i] <- 0
+    }
+    
+    # Store the summary of the model in the list
+    model_summaries[[as.character(results_ingame_contributions$id[i])]] <- summary(model)
+    
+}
+
+# Make beta_slope_norm01
+results_ingame_contributions <- results_ingame_contributions %>% 
+  mutate(beta_slope_ingame_norm01 = (beta_slope_ingame - min(beta_slope_ingame)) / (max(beta_slope_ingame) - min(beta_slope_ingame)))
+
+
+
+### Make it for no intercept models
+# Initialize a dataframe to store results
+results_ingame_contributions_no_int <- data.frame(id = unique(ingame_contributions$id), 
+                                           beta_slope_ingame_no_int = numeric(length(unique(ingame_contributions$id))),
+                                           adj_r2_ingame_no_int = numeric(length(unique(ingame_contributions$id))))
+
+# Initialize a list to store model summaries
+model_summaries <- list()
+
+# Loop through each unique ID
+for (i in seq_along(results_ingame_contributions_no_int$id)) {
+    # Filter data for the current ID
+    filtered_data <- ingame_contributions %>% filter(id == results_ingame_contributions_no_int$id[i])
+    
+    # Fit the model without an intercept
+    model <- lm(contribution_id ~ avg_contr_g_others + 0, data = filtered_data)
+    
+    # Store the slope in the results dataframe
+    results_ingame_contributions_no_int$beta_slope_ingame_no_int[i] <- coef(model)["avg_contr_g_others"]
+    results_ingame_contributions_no_int$adj_r2_ingame_no_int[i] <- summary(model)$adj.r.squared
+    
+    # Replace NA or NaN in adj_r2 with 0
+    if (is.na(results_ingame_contributions_no_int$adj_r2_ingame_no_int[i]) || is.nan(results_ingame_contributions_no_int$adj_r2_ingame_no_int[i])) {
+            results_ingame_contributions_no_int$adj_r2_ingame_no_int[i] <- 0
+    }
+    
+    # Store the summary of the model in the list
+    model_summaries[[as.character(results_ingame_contributions_no_int$id[i])]] <- summary(model)
+    
+}
+
+# Make beta_slope_norm01
+results_ingame_contributions_no_int <- results_ingame_contributions_no_int %>% 
+  mutate(beta_slope_ingame_no_int_norm01 = (beta_slope_ingame_no_int - min(beta_slope_ingame_no_int)) / (max(beta_slope_ingame_no_int) - min(beta_slope_ingame_no_int)))
+
+# --- Merge the two results dataframes
+results_ingame_contributions_ <- merge(results_ingame_contributions,results_ingame_contributions_no_int, by = "id")
+
+# Merge on
+rho_and_beta_192__ <- merge(rho_and_beta_192,results_ingame_contributions_, by = "id")
+
+```
+
+```{r correlate_w_posthoc}
+# Correlate
+# - Main corr analysis
+cor_test_main <- cor.test(rho_and_beta_192__$beta_slope_norm01, rho_and_beta_192__$rho_mode_from_jags, method = "spearman")
+cor_test_main
+
+# - Posthoc corr1: beta_slope_norm01 vs beta_slope_ingame_norm01 (no int)
+cor_test_ph1 <- cor.test(rho_and_beta_192__$beta_slope_norm01, rho_and_beta_192__$beta_slope_ingame_no_int_norm01, method = "spearman")
+cor_test_ph1 # With an intercept, the correlation decreases and p-value increases
+
+# - Posthoc corr2: beta_slope vs beta_slope_ingame (not normalised)
+cor_test_ph2 <- cor.test(rho_and_beta_192__$beta_slope, rho_and_beta_192__$beta_slope_ingame_no_int, method = "spearman")
+cor_test_ph2 # largely same as cor_test_ph1
+
+# - Posthoc corr3: beta_slope_ingame_norm01 vs rho
+cor_test_ph3 <- cor.test(rho_and_beta_192__$beta_slope_ingame_no_int_norm01, rho_and_beta_192__$rho_mode_from_jags, method = "spearman")
+cor_test_ph3 # strong correlation
+
+```
